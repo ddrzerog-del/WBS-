@@ -37,7 +37,7 @@ def build_tree(data):
             root_nodes.append(node)
     return root_nodes
 
-# --- 2. 좌표 계산 로직 (레벨별 개별 상하 간격 적용) ---
+# --- 2. 좌표 계산 로직 (연동형 상하 간격 적용) ---
 def calculate_layout(root_nodes, config):
     layout_data = []
     wbs_w = config['wbs_w']
@@ -45,15 +45,19 @@ def calculate_layout(root_nodes, config):
     l1_gap_x = config['l1_gap_x']
     l2_gap_x = config['l2_gap_x']
     
-    # 레벨간 전용 상하 간격 설정
+    # 연동형 상하 간격 로직
+    base_v_gap = config['base_v_gap'] # 모든 레벨 공통 베이스
+    
+    # 각 레벨별 최종 간격 = 베이스 간격 + 레벨별 추가 여백
     v_gaps = {
-        2: config['v_gap_l1_l2'],
-        3: config['v_gap_l2_l3'],
-        4: config['v_gap_l3_l4'],
-        'deep': config['v_gap_deep']
+        2: base_v_gap + config['extra_l1_l2'],
+        3: base_v_gap + config['extra_l2_l3'],
+        4: base_v_gap + config['extra_l3_l4'],
+        'deep': base_v_gap + config['extra_deep']
     }
-    tight_gap = 0.05 # 부모-첫자식 고정 밀착 간격
+    tight_gap = 0.05 # 부모-첫자식은 여전히 밀착하여 계층성 강조
 
+    # 슬라이드 중앙 정렬 원점
     start_x = (33.8 - wbs_w) / 2
     start_y = (19.05 - wbs_h) / 2
 
@@ -71,7 +75,7 @@ def calculate_layout(root_nodes, config):
             l2_count = len(l1['children'])
             l2_width = (l1_width - (l2_gap_x * (l2_count - 1))) / l2_count
             
-            # L1 -> L2 전용 간격 적용
+            # L1 -> L2 간격 적용
             current_y_for_l2 = y_l1 + h_l1 + v_gaps[2]
 
             for j, l2 in enumerate(l1['children']):
@@ -85,11 +89,11 @@ def calculate_layout(root_nodes, config):
                     last_y = py + ph
                     
                     for idx, child in enumerate(parent_node['children']):
-                        # 부모-첫자식은 무조건 tight_gap
+                        # 첫 자식은 부모에게 밀착
                         if idx == 0:
                             gap = tight_gap
                         else:
-                            # 형제 그룹 사이의 간격은 해당 레벨의 전용 옵션값 적용
+                            # 형제 노드 간의 간격 (설정된 연동 간격 적용)
                             lvl = child['level']
                             gap = v_gaps.get(lvl, v_gaps['deep'])
                         
@@ -102,13 +106,14 @@ def calculate_layout(root_nodes, config):
                         layout_data.append({
                             'node': child, 'x': c_x, 'y': target_y, 'w': c_w, 'h': c_h, 'level': child['level']
                         })
+                        # 자식 그룹의 끝점을 반환받아 누적
                         last_y = draw_recursive(child, c_x, target_y, c_w, c_h)
                     return last_y
 
                 draw_recursive(l2, x_l2, y_l2, l2_width, h_l2)
     return layout_data
 
-# --- 3. 미리보기 (Matplotlib) ---
+# --- 3. 미리보기 & 4. PPT 생성 (동일 로직) ---
 def draw_preview(layout_data):
     fig, ax = plt.subplots(figsize=(10, 5.6))
     ax.set_xlim(0, 33.8)
@@ -127,7 +132,6 @@ def draw_preview(layout_data):
     ax.set_axis_off()
     st.pyplot(fig)
 
-# --- 4. PPT 생성 (이전과 동일) ---
 def generate_ppt(layout_data):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Cm(33.8), Cm(19.05)
@@ -161,26 +165,32 @@ with st.sidebar.expander("📏 캔버스 크기 (cm)", expanded=True):
     wbs_w = st.number_input("가로 너비", 10.0, 32.0, 31.0)
     wbs_h = st.number_input("세로 높이", 5.0, 18.0, 16.0)
 
+with st.sidebar.expander("↕️ 연동형 상하 간격 (cm)", expanded=True):
+    # 공통 베이스 간격을 조절하면 모든 레벨이 동시에 벌어짐
+    base_v_gap = st.number_input("기준 공통 간격 (All Level)", 0.0, 5.0, 0.2, 0.05)
+    st.divider()
+    # 추가 여백 (베이스 간격에 더해짐)
+    extra_l1_l2 = st.number_input("L1 ↔ L2 추가 여백", 0.0, 5.0, 0.6, 0.05)
+    extra_l2_l3 = st.number_input("L2 ↔ L3 추가 여백", 0.0, 5.0, 0.3, 0.05)
+    extra_l3_l4 = st.number_input("L3 ↔ L4 추가 여백", 0.0, 5.0, 0.1, 0.05)
+    extra_deep = st.number_input("상세레벨 추가 여백", 0.0, 5.0, 0.0, 0.05)
+
 with st.sidebar.expander("↔️ 좌우 간격 조절 (cm)", expanded=True):
     l1_gap_x = st.number_input("대그룹(L1) 간격", 0.0, 10.0, 1.0)
     l2_gap_x = st.number_input("소그룹(L2) 간격", 0.0, 5.0, 0.3)
 
-with st.sidebar.expander("↕️ 상하 간격 조절 (cm)", expanded=True):
-    v_gap_l1_l2 = st.number_input("L1 ↔ L2 간격", 0.0, 5.0, 0.8, 0.05)
-    v_gap_l2_l3 = st.number_input("L2 ↔ L3 간격", 0.0, 5.0, 0.5, 0.05)
-    v_gap_l3_l4 = st.number_input("L3 ↔ L4 간격", 0.0, 5.0, 0.2, 0.05)
-    v_gap_deep = st.number_input("L4 이상(상세) 간격", 0.0, 5.0, 0.1, 0.05)
-    st.caption("부모와 첫 번째 자식은 항상 밀착 정렬됩니다.")
-
 config = {
     'wbs_w': wbs_w, 'wbs_h': wbs_h, 
     'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x,
-    'v_gap_l1_l2': v_gap_l1_l2, 'v_gap_l2_l3': v_gap_l2_l3, 
-    'v_gap_l3_l4': v_gap_l3_l4, 'v_gap_deep': v_gap_deep
+    'base_v_gap': base_v_gap,
+    'extra_l1_l2': extra_l1_l2, 'extra_l2_l3': extra_l2_l3, 
+    'extra_l3_l4': extra_l3_l4, 'extra_deep': extra_deep
 }
 
-st.title("📊 WBS 프로 디자이너 (레벨별 개별 간격 제어)")
-uploaded_file = st.file_uploader("파일 업로드 (xlsx, pptx)", type=["xlsx", "pptx"])
+st.title("📊 WBS 프로 디자이너 (연동형 간격 제어)")
+st.info("💡 '기준 공통 간격'을 높이면 하위 레벨(L4)과 상위 레벨(L2, L3)이 함께 시원하게 벌어집니다.")
+
+uploaded_file = st.file_uploader("파일 업로드", type=["xlsx", "pptx"])
 
 if uploaded_file:
     raw_data = []
@@ -201,11 +211,11 @@ if uploaded_file:
         raw_data.sort(key=lambda x: [int(i) for i in x['id_code'].split('.')])
         tree = build_tree(raw_data)
         layout_data = calculate_layout(tree, config)
-        st.subheader("🖼️ 실시간 미리보기 (모든 레벨 간격 제어 가능)")
+        st.subheader("🖼️ 실시간 미리보기")
         draw_preview(layout_data)
         if st.button("🚀 PPT 생성 및 다운로드", use_container_width=True):
             final_ppt = generate_ppt(layout_data)
             ppt_io = io.BytesIO()
             final_ppt.save(ppt_io)
             ppt_io.seek(0)
-            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Custom_WBS_Professional.pptx")
+            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Linked_WBS_Final.pptx")
