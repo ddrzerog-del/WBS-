@@ -37,7 +37,7 @@ def build_tree(data):
             root_nodes.append(node)
     return root_nodes
 
-# --- 2. 좌표 계산 로직 (상세 레벨 밀착 모드) ---
+# --- 2. 좌표 계산 로직 (그룹/아이템 간격 분리) ---
 def calculate_layout(root_nodes, config):
     layout_data = []
     wbs_w = config['wbs_w']
@@ -45,10 +45,10 @@ def calculate_layout(root_nodes, config):
     l1_gap_x = config['l1_gap_x']
     l2_gap_x = config['l2_gap_x']
     
-    base_v_gap = config['base_v_gap']
-    gap_decay = config['gap_decay']
-    tight_gap = 0.05  # 부모-첫자식 및 상세레벨 리스트 간격
+    item_v_gap = config['item_v_gap']   # 아이템 간 기본 간격
+    group_v_gap = config['group_v_gap'] # 그룹(줄기) 간 추가 여백
 
+    # 슬라이드 중앙 정렬 원점
     start_x = (33.8 - wbs_w) / 2
     start_y = (19.05 - wbs_h) / 2
 
@@ -65,7 +65,9 @@ def calculate_layout(root_nodes, config):
         if l1['children']:
             l2_count = len(l1['children'])
             l2_width = (l1_width - (l2_gap_x * (l2_count - 1))) / l2_count
-            current_y_for_l2 = y_l1 + h_l1 + base_v_gap
+            
+            # 1레벨 아래 2레벨은 첫 시작이므로 그룹 간격 적용
+            current_y_for_l2 = y_l1 + h_l1 + group_v_gap
 
             for j, l2 in enumerate(l1['children']):
                 x_l2 = x_l1 + (j * (l2_width + l2_gap_x))
@@ -73,38 +75,34 @@ def calculate_layout(root_nodes, config):
                 h_l2 = 1.0
                 layout_data.append({'node': l2, 'x': x_l2, 'y': y_l2, 'w': l2_width, 'h': h_l2, 'level': 2})
 
-                def draw_recursive(parent_node, px, py, pw, ph, level):
+                # 재귀적으로 하위 노드 배치
+                def draw_recursive(parent_node, px, py, pw, ph):
                     nonlocal layout_data
                     last_y = py + ph
                     
-                    # 레벨별 형제 간격 결정
-                    # 4레벨(자식이 5레벨인 경우) 이상부터는 리스트처럼 아주 좁게 설정
-                    if level >= 3:
-                        current_sibling_gap = tight_gap * 2 # 상세 레벨은 아주 촘촘하게
-                    else:
-                        current_sibling_gap = base_v_gap * (gap_decay ** (level - 1))
-
                     for idx, child in enumerate(parent_node['children']):
-                        # 첫 자식은 언제나 부모에게 밀착
-                        gap = tight_gap if idx == 0 else current_sibling_gap
+                        # 첫 자식은 부모에게 밀착(item_v_gap)
+                        # 두 번째 형제부터는 '그룹 간 여백(group_v_gap)'을 추가로 적용
+                        gap = item_v_gap if idx == 0 else (item_v_gap + group_v_gap)
                         
                         target_y = last_y + gap
                         
-                        # 너비 계단식 축소 (레벨당 0.3cm씩)
+                        # 너비 축소 및 우측 정렬
                         reduction = 0.3 * (child['level'] - 2)
                         c_w = max(l2_width - reduction, 2.0)
                         c_x = (px + pw) - c_w
-                        c_h = 0.7 # 상세 항목은 높이도 약간 줄임
+                        c_h = 0.8
                         
                         layout_data.append({
                             'node': child, 'x': c_x, 'y': target_y, 'w': c_w, 'h': c_h, 'level': child['level']
                         })
                         
-                        last_y = draw_recursive(child, c_x, target_y, c_w, c_h, child['level'])
+                        # 자식의 가족들 전체 높이를 계산하여 반환
+                        last_y = draw_recursive(child, c_x, target_y, c_w, c_h)
                     
                     return last_y
 
-                draw_recursive(l2, x_l2, y_l2, l2_width, h_l2, 2)
+                draw_recursive(l2, x_l2, y_l2, l2_width, h_l2)
                     
     return layout_data
 
@@ -114,19 +112,19 @@ def draw_preview(layout_data):
     ax.set_xlim(0, 33.8)
     ax.set_ylim(0, 19.05)
     ax.invert_yaxis()
-    ax.add_patch(patches.Rectangle((0, 0), 33.8, 19.05, linewidth=1, edgecolor='black', facecolor='#f9f9f9', alpha=0.5))
+    ax.add_patch(patches.Rectangle((0, 0), 33.8, 19.05, linewidth=1, edgecolor='gray', facecolor='#fdfdfd', alpha=0.5))
     for item in layout_data:
         lvl = item['level']
         color = '#1f497d' if lvl == 1 else '#365f91' if lvl == 2 else '#efefef'
-        rect = patches.Rectangle((item['x'], item['y']), item['w'], item['h'], linewidth=0.5, edgecolor='#bcbcbc', facecolor=color)
+        rect = patches.Rectangle((item['x'], item['y']), item['w'], item['h'], linewidth=0.5, edgecolor='#aaaaaa', facecolor=color)
         ax.add_patch(rect)
-        display_text = item['node']['text'][:15]
+        display_text = item['node']['text'][:12]
         txt_color = 'white' if lvl <= 2 else 'black'
-        ax.text(item['x'] + item['w']/2, item['y'] + item['h']/2, display_text, color=txt_color, fontsize=5.5, ha='center', va='center')
+        ax.text(item['x'] + item['w']/2, item['y'] + item['h']/2, display_text, color=txt_color, fontsize=6, ha='center', va='center')
     ax.set_axis_off()
     st.pyplot(fig)
 
-# --- 4. PPT 생성 (이전과 동일) ---
+# --- 4. PPT 생성 ---
 def generate_ppt(layout_data):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Cm(33.8), Cm(19.05)
@@ -145,7 +143,7 @@ def generate_ppt(layout_data):
             c = min(220 + (lvl * 5), 250)
             shp.fill.fore_color.rgb = RGBColor(c, c, c+5)
             shp.line.color.rgb = RGBColor(200, 200, 200)
-            f_size, f_bold, f_color, align = Pt(8.5), False, RGBColor(0, 0, 0), PP_ALIGN.LEFT
+            f_size, f_bold, f_color, align = Pt(9), False, RGBColor(0, 0, 0), PP_ALIGN.LEFT
         tf = shp.text_frame
         tf.text = item['node']['text']
         p = tf.paragraphs[0]
@@ -153,28 +151,35 @@ def generate_ppt(layout_data):
     return prs
 
 # --- 5. Streamlit UI ---
-st.set_page_config(page_title="WBS List Aligner", layout="wide")
-st.sidebar.title("🎨 WBS 상세 디자인")
+st.set_page_config(page_title="WBS Master Designer", layout="wide")
 
-with st.sidebar.expander("📏 전체 영역 (cm)", expanded=True):
-    wbs_w = st.number_input("가로 너비", 10.0, 32.0, 30.0, 0.5)
-    wbs_h = st.number_input("세로 높이", 5.0, 18.0, 15.0, 0.5)
+st.sidebar.title("🎨 WBS 레이아웃 커스텀")
 
-with st.sidebar.expander("↕️ 그룹 간격 설정", expanded=True):
-    base_v_gap = st.number_input("기준 그룹 간격", 0.1, 5.0, 0.8, 0.1)
-    gap_decay = st.slider("레벨당 간격 축소 비율", 0.3, 1.0, 0.618, 0.01)
-    st.caption("레벨 4 이상은 리스트 모드로 자동 전환되어 촘촘하게 배치됩니다.")
+with st.sidebar.expander("📏 전체 캔버스 (cm)", expanded=True):
+    wbs_w = st.number_input("WBS 전체 너비", 10.0, 32.0, 30.0, 0.5)
+    wbs_h = st.number_input("WBS 전체 높이", 5.0, 18.0, 15.0, 0.5)
+
+with st.sidebar.expander("↔️ 좌우 간격 (cm)", expanded=True):
+    l1_gap_x = st.number_input("대그룹(L1) 간격", 0.0, 10.0, 1.5, 0.1)
+    l2_gap_x = st.number_input("소그룹(L2) 간격", 0.0, 5.0, 0.5, 0.1)
+
+with st.sidebar.expander("↕️ 상하 간격 정밀 조정 (cm)", expanded=True):
+    item_v_gap = st.number_input("아이템 간 간격 (기본)", 0.0, 2.0, 0.1, 0.05)
+    group_v_gap = st.number_input("그룹(줄기) 간 추가 여백", 0.0, 5.0, 0.8, 0.1)
+    st.caption("그룹 간 여백을 키우면 다른 줄기 사이가 벌어집니다.")
 
 config = {
-    'wbs_w': wbs_w, 'wbs_h': wbs_h, 'l1_gap_x': 1.5, 'l2_gap_x': 0.5,
-    'base_v_gap': base_v_gap, 'gap_decay': gap_decay
+    'wbs_w': wbs_w, 'wbs_h': wbs_h, 
+    'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x,
+    'item_v_gap': item_v_gap, 'group_v_gap': group_v_gap
 }
 
-st.title("📊 WBS 프로 디자이너 (리스트 모드 통합)")
-uploaded_file = st.file_uploader("파일 업로드", type=["xlsx", "pptx"])
+st.title("📊 WBS 마스터 디자이너")
+st.info("아이템 간 간격은 '촘촘하게', 그룹 간 추가 여백은 '넓게' 설정하면 최고의 가독성이 나옵니다.")
+
+uploaded_file = st.file_uploader("엑셀 또는 PPT 파일 업로드", type=["xlsx", "pptx"])
 
 if uploaded_file:
-    # (데이터 파싱 로직 생략 - 이전과 동일)
     raw_data = []
     if uploaded_file.name.endswith("xlsx"):
         df = pd.read_excel(uploaded_file)
@@ -193,11 +198,13 @@ if uploaded_file:
         raw_data.sort(key=lambda x: [int(i) for i in x['id_code'].split('.')])
         tree = build_tree(raw_data)
         layout_data = calculate_layout(tree, config)
-        st.subheader("🖼️ 미리보기 (상세 레벨 밀착 적용)")
+        
+        st.subheader("🖼️ 디자인 미리보기")
         draw_preview(layout_data)
-        if st.button("🚀 PPT 생성", use_container_width=True):
+        
+        if st.button("🚀 설정대로 PPT 생성", use_container_width=True):
             final_ppt = generate_ppt(layout_data)
             ppt_io = io.BytesIO()
             final_ppt.save(ppt_io)
             ppt_io.seek(0)
-            st.download_button("🎁 다운로드", ppt_io, "WBS_Smart_List.pptx")
+            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Customized_WBS.pptx")
