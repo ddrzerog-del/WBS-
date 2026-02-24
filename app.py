@@ -37,7 +37,7 @@ def build_tree(data):
             root_nodes.append(node)
     return root_nodes
 
-# --- 2. 좌표 계산 로직 (부모-자식 간격 일원화) ---
+# --- 2. 좌표 계산 로직 (모든 수직 간격 동일화) ---
 def calculate_layout(root_nodes, config):
     layout_data = []
     wbs_w = config['wbs_w']
@@ -45,15 +45,10 @@ def calculate_layout(root_nodes, config):
     l1_gap_x = config['l1_gap_x']
     l2_gap_x = config['l2_gap_x']
     
-    # 연동형 상하 간격 로직
-    base_v_gap = config['base_v_gap']
-    v_gaps = {
-        2: base_v_gap + config['extra_l1_l2'],
-        3: base_v_gap + config['extra_l2_l3'],
-        4: base_v_gap + config['extra_l3_l4'],
-        'deep': base_v_gap + config['extra_deep']
-    }
+    # 통합 수직 간격 (A)
+    v_gap_a = config['v_gap_a']
 
+    # 슬라이드 중앙 정렬 원점
     start_x = (33.8 - wbs_w) / 2
     start_y = (19.05 - wbs_h) / 2
 
@@ -64,32 +59,32 @@ def calculate_layout(root_nodes, config):
     for i, l1 in enumerate(root_nodes):
         x_l1 = start_x + (i * (l1_width + l1_gap_x))
         y_l1 = start_y
-        h_l1 = 1.2
+        h_l1 = 1.0 # 박스 높이 고정
         layout_data.append({'node': l1, 'x': x_l1, 'y': y_l1, 'w': l1_width, 'h': h_l1, 'level': 1})
 
         if l1['children']:
             l2_count = len(l1['children'])
             l2_width = (l1_width - (l2_gap_x * (l2_count - 1))) / l2_count
             
-            # L1 -> L2 간격 적용
-            current_y_for_l2 = y_l1 + h_l1 + v_gaps[2]
+            # L1 박스 밑에 L2들이 시작되는 지점 (간격 A 적용)
+            y_l2_start = y_l1 + h_l1 + v_gap_a
 
             for j, l2 in enumerate(l1['children']):
                 x_l2 = x_l1 + (j * (l2_width + l2_gap_x))
-                y_l2 = current_y_for_l2
+                y_l2 = y_l2_start
                 h_l2 = 1.0
                 layout_data.append({'node': l2, 'x': x_l2, 'y': y_l2, 'w': l2_width, 'h': h_l2, 'level': 2})
 
-                def draw_recursive(parent_node, px, py, pw, ph):
+                # 재귀적으로 모든 후손을 수직으로 쌓음
+                def stack_vertical(parent_node, px, py, pw, ph):
                     nonlocal layout_data
-                    last_y = py + ph
+                    current_bottom_y = py + ph
                     
-                    for idx, child in enumerate(parent_node['children']):
-                        # 수정된 부분: 첫 번째 자식(idx==0)도 형제와 동일한 v_gap을 적용
-                        lvl = child['level']
-                        gap = v_gaps.get(lvl, v_gaps['deep'])
+                    for child in parent_node['children']:
+                        # 모든 수직 이동은 이전 요소의 바닥면 + 간격 A
+                        target_y = current_bottom_y + v_gap_a
                         
-                        target_y = last_y + gap
+                        # 너비 계단식 축소 (선택 사항이나 가독성을 위해 유지)
                         reduction = 0.3 * (child['level'] - 2)
                         c_w = max(l2_width - reduction, 2.0)
                         c_x = (px + pw) - c_w
@@ -98,20 +93,23 @@ def calculate_layout(root_nodes, config):
                         layout_data.append({
                             'node': child, 'x': c_x, 'y': target_y, 'w': c_w, 'h': c_h, 'level': child['level']
                         })
-                        # 자식 그룹 끝점 누적
-                        last_y = draw_recursive(child, c_x, target_y, c_w, c_h)
-                    return last_y
+                        
+                        # 자식 노드를 다 그린 후 그 바닥 좌표를 다시 받아옴
+                        current_bottom_y = stack_vertical(child, c_x, target_y, c_w, c_h)
+                    
+                    return current_bottom_y
 
-                draw_recursive(l2, x_l2, y_l2, l2_width, h_l2)
+                stack_vertical(l2, x_l2, y_l2, l2_width, h_l2)
+                    
     return layout_data
 
-# --- 3. 미리보기 & 4. PPT 생성 ---
+# --- 3. 미리보기 (Matplotlib) ---
 def draw_preview(layout_data):
     fig, ax = plt.subplots(figsize=(10, 5.6))
     ax.set_xlim(0, 33.8)
     ax.set_ylim(0, 19.05)
     ax.invert_yaxis()
-    ax.add_patch(patches.Rectangle((0, 0), 33.8, 19.05, linewidth=1, edgecolor='#cccccc', facecolor='#fdfdfd'))
+    ax.add_patch(patches.Rectangle((0, 0), 33.8, 19.05, linewidth=1, edgecolor='#cccccc', facecolor='#ffffff'))
     for item in layout_data:
         lvl = item['level']
         color = '#1f497d' if lvl == 1 else '#365f91' if lvl == 2 else '#f2f2f2'
@@ -124,6 +122,7 @@ def draw_preview(layout_data):
     ax.set_axis_off()
     st.pyplot(fig)
 
+# --- 4. PPT 생성 ---
 def generate_ppt(layout_data):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Cm(33.8), Cm(19.05)
@@ -141,7 +140,7 @@ def generate_ppt(layout_data):
         else:
             c = min(220 + (lvl * 5), 250)
             shp.fill.fore_color.rgb = RGBColor(c, c, c+5)
-            shp.line.color.rgb = RGBColor(200, 200, 200)
+            shp.line.color.rgb = RGBColor(180, 180, 180)
             f_size, f_bold, f_color, align = Pt(8.5), False, RGBColor(0, 0, 0), PP_ALIGN.LEFT
         tf = shp.text_frame
         tf.text = item['node']['text']
@@ -149,38 +148,27 @@ def generate_ppt(layout_data):
         p.font.size, p.font.bold, p.font.color.rgb, p.alignment = f_size, f_bold, f_color, align
     return prs
 
-# --- 5. Streamlit UI (사이드바 유지) ---
-st.set_page_config(page_title="WBS Master Designer", layout="wide")
-st.sidebar.title("🎨 레이아웃 정밀 설정")
+# --- 5. Streamlit UI ---
+st.set_page_config(page_title="WBS Uniform Designer", layout="wide")
+st.sidebar.title("🎨 WBS 정밀 디자인")
 
 with st.sidebar.expander("📏 캔버스 크기 (cm)", expanded=True):
     wbs_w = st.number_input("가로 너비", 10.0, 32.0, 31.0)
     wbs_h = st.number_input("세로 높이", 5.0, 18.0, 16.0)
 
-with st.sidebar.expander("↕️ 상하 간격 조절 (cm)", expanded=True):
-    # 공통 베이스 간격
-    base_v_gap = st.number_input("기준 공통 간격 (All Level)", 0.0, 5.0, 0.2, 0.05)
-    st.divider()
-    # 레벨별 추가 여백 (이제 부모-자식 간격에도 동일하게 적용됨)
-    extra_l1_l2 = st.number_input("L1 ↔ L2 간격 추가", 0.0, 5.0, 0.6, 0.05)
-    extra_l2_l3 = st.number_input("L2 ↔ L3 간격 추가", 0.0, 5.0, 0.3, 0.05)
-    extra_l3_l4 = st.number_input("L3 ↔ L4 간격 추가", 0.0, 5.0, 0.1, 0.05)
-    extra_deep = st.number_input("상세레벨 간격 추가", 0.0, 5.0, 0.0, 0.05)
+with st.sidebar.expander("↕️ 수직 통합 간격 (cm)", expanded=True):
+    # 이것이 사용자님이 말씀하신 '간격 A'입니다.
+    v_gap_a = st.number_input("동일 수직 간격 (A)", 0.0, 5.0, 0.5, 0.05)
+    st.caption("부모-자식, 형제-형제 간격이 이 값으로 모두 통일됩니다.")
 
-with st.sidebar.expander("↔️ 좌우 간격 조절 (cm)", expanded=True):
-    l1_gap_x = st.number_input("대그룹(L1) 간격", 0.0, 10.0, 1.0)
-    l2_gap_x = st.number_input("소그룹(L2) 간격", 0.0, 5.0, 0.3)
+with st.sidebar.expander("↔️ 좌우 그룹 간격 (cm)", expanded=True):
+    l1_gap_x = st.number_input("L1 그룹 좌우 간격", 0.0, 10.0, 1.0)
+    l2_gap_x = st.number_input("L2 그룹 좌우 간격", 0.0, 5.0, 0.3)
 
-config = {
-    'wbs_w': wbs_w, 'wbs_h': wbs_h, 
-    'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x,
-    'base_v_gap': base_v_gap,
-    'extra_l1_l2': extra_l1_l2, 'extra_l2_l3': extra_l2_l3, 
-    'extra_l3_l4': extra_l3_l4, 'extra_deep': extra_deep
-}
+config = {'wbs_w': wbs_w, 'wbs_h': wbs_h, 'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x, 'v_gap_a': v_gap_a}
 
-st.title("📊 WBS 프로 디자이너 (균등 수직 간격 버전)")
-st.info("💡 부모-자식 사이의 간격과 형제 사이의 간격이 이제 사용자가 설정한 값에 따라 동일하게 정렬됩니다.")
+st.title("📊 WBS 프로 디자이너 (수직 간격 일원화)")
+st.info("💡 '동일 수직 간격(A)'을 조절하면 WBS 전체의 수직 리듬이 완벽하게 일치된 상태로 벌어지거나 좁아집니다.")
 
 uploaded_file = st.file_uploader("파일 업로드", type=["xlsx", "pptx"])
 
@@ -210,4 +198,4 @@ if uploaded_file:
             ppt_io = io.BytesIO()
             final_ppt.save(ppt_io)
             ppt_io.seek(0)
-            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Balanced_WBS_Final.pptx")
+            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Uniform_WBS.pptx")
