@@ -6,8 +6,10 @@ from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
 import io
 import re
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
-# --- 데이터 파싱 및 트리 구축 (이전과 동일) ---
+# --- 1. 데이터 파싱 및 트리 구조화 ---
 def parse_line(text):
     text = str(text).strip()
     match = re.match(r'^([\d\.]+)', text)
@@ -40,127 +42,148 @@ def get_all_descendants(node, desc_list):
         desc_list.append(child)
         get_all_descendants(child, desc_list)
 
-# --- 메인 PPT 생성 함수 ---
-def create_final_wbs(root_nodes, config):
-    prs = Presentation()
-    # 슬라이드 크기 설정 (사용자 입력에 따라 유동적일 수 있으나 기본 16:9 권장)
-    prs.slide_width = Inches(13.33)
-    prs.slide_height = Inches(7.5)
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-
-    # 설정값 (cm -> pptx 내부 단위 변환)
-    wbs_w = Cm(config['wbs_w_cm'])
-    wbs_h = Cm(config['wbs_h_cm'])
-    l1_gap = Cm(config['l1_gap_cm'])
-    l2_gap = Cm(config['l2_gap_cm'])
-    v_gap_base = Cm(config['v_gap_cm'])
+# --- 2. 좌표 계산 로직 (미리보기 & PPT 공용) ---
+# 모든 노드의 x, y, width, height를 cm 단위로 미리 계산합니다.
+def calculate_layout(root_nodes, config):
+    layout_data = []
+    wbs_w = config['wbs_w']
+    wbs_h = config['wbs_h']
+    l1_gap = config['l1_gap']
+    l2_gap = config['l2_gap']
+    v_gap = config['v_gap']
     
-    # 시작 좌표 (가운데 정렬을 위해 계산)
-    start_x = (prs.slide_width - wbs_w) / 2
-    start_y = (prs.slide_height - wbs_h) / 2
+    # 시작 원점 (중앙 정렬용)
+    # 실제 PPT 슬라이드 크기(16:9)는 약 33.8cm x 19.05cm
+    start_x = (33.8 - wbs_w) / 2
+    start_y = (19.05 - wbs_h) / 2
 
-    if not root_nodes: return prs
-
-    # 1레벨 박스 너비 계산
     l1_count = len(root_nodes)
-    # 전체너비 = (l1_width * l1_count) + (l1_gap * (l1_count - 1))
+    if l1_count == 0: return []
+    
     l1_width = (wbs_w - (l1_gap * (l1_count - 1))) / l1_count
 
     for i, l1 in enumerate(root_nodes):
-        curr_l1_x = start_x + (i * (l1_width + l1_gap))
-        l1_h = Cm(1.2) # 1레벨 높이는 고정 권장
-        
-        # 1레벨 상자
-        shp1 = slide.shapes.add_shape(1, curr_l1_x, start_y, l1_width, l1_h)
-        shp1.fill.solid()
-        shp1.fill.fore_color.rgb = RGBColor(31, 73, 125)
-        shp1.text = l1['text']
-        shp1.text_frame.paragraphs[0].font.size = Pt(12)
-        shp1.text_frame.paragraphs[0].font.bold = True
+        x_l1 = start_x + (i * (l1_width + l1_gap))
+        y_l1 = start_y
+        h_l1 = 1.2
+        layout_data.append({'node': l1, 'x': x_l1, 'y': y_l1, 'w': l1_width, 'h': h_l1, 'level': 1})
 
         if l1['children']:
             l2_count = len(l1['children'])
-            # 2레벨 너비 (1레벨 박스 영역 내에서 계산)
             l2_width = (l1_width - (l2_gap * (l2_count - 1))) / l2_count
             
             for j, l2 in enumerate(l1['children']):
-                curr_l2_x = curr_l1_x + (j * (l2_width + l2_gap))
-                y_l2 = start_y + l1_h + v_gap_base
-                l2_h = Cm(1.0)
+                x_l2 = x_l1 + (j * (l2_width + l2_gap))
+                y_l2 = y_l1 + h_l1 + v_gap
+                h_l2 = 1.0
+                layout_data.append({'node': l2, 'x': x_l2, 'y': y_l2, 'w': l2_width, 'h': h_l2, 'level': 2})
 
-                # 2레벨 상자
-                shp2 = slide.shapes.add_shape(1, curr_l2_x, y_l2, l2_width, l2_h)
-                shp2.fill.solid()
-                shp2.fill.fore_color.rgb = RGBColor(54, 95, 145)
-                shp2.text = l2['text']
-                shp2.text_frame.paragraphs[0].font.size = Pt(10)
-
-                # 3레벨 이하 상세항목
                 descendants = []
                 get_all_descendants(l2, descendants)
+                curr_y = y_l2 + h_l2
                 
-                current_y = y_l2 + l2_h
                 for k, desc in enumerate(descendants):
-                    # 레벨에 따른 수직 간격 및 너비 계단식 축소
-                    step_v_gap = v_gap_base * 0.6 * (0.9 ** (desc['level'] - 3))
-                    current_y += step_v_gap
+                    # 간격 및 너비 축소 적용
+                    step_v = v_gap * 0.6 * (0.9 ** (desc['level'] - 3))
+                    curr_y += step_v
                     
-                    # 너비 축소 (Cm(0.2)씩 계단식 축소)
-                    reduction = Cm(0.3 * (desc['level'] - 2))
-                    desc_w = l2_width - reduction
-                    if desc_w < Cm(2.0): desc_w = Cm(2.0) # 최소 크기 방어선
+                    reduction = 0.4 * (desc['level'] - 2)
+                    d_w = max(l2_width - reduction, 2.0)
+                    d_x = (x_l2 + l2_width) - d_w # 우측 정렬
+                    d_h = 0.8
+                    
+                    layout_data.append({'node': desc, 'x': d_x, 'y': curr_y, 'w': d_w, 'h': d_h, 'level': desc['level']})
+                    curr_y += d_h
+                    
+    return layout_data
 
-                    # 우측 정렬
-                    parent_right = curr_l2_x + l2_width
-                    desc_x = parent_right - desc_w
-                    
-                    desc_h = Cm(0.8)
-                    shp_d = slide.shapes.add_shape(1, desc_x, current_y, desc_w, desc_h)
-                    
-                    # 색상 및 텍스트 설정
-                    c_val = min(190 + (desc['level'] * 15), 245)
-                    shp_d.fill.solid()
-                    shp_d.fill.fore_color.rgb = RGBColor(c_val, c_val, c_val + 10)
-                    shp_d.line.color.rgb = RGBColor(200, 200, 200)
-                    shp_d.text = desc['text']
-                    
-                    tf = shp_d.text_frame
-                    tf.paragraphs[0].font.size = Pt(8)
-                    tf.paragraphs[0].font.color.rgb = RGBColor(0,0,0)
-                    tf.paragraphs[0].alignment = PP_ALIGN.LEFT
-                    
-                    current_y += desc_h
+# --- 3. 미리보기 (Matplotlib) ---
+def draw_preview(layout_data):
+    fig, ax = plt.subplots(figsize=(12, 6.75)) # 16:9 비율
+    ax.set_xlim(0, 33.8)
+    ax.set_ylim(0, 19.05)
+    ax.invert_yaxis() # PPT처럼 상단이 0
+    
+    # 슬라이드 테두리
+    ax.add_patch(patches.Rectangle((0, 0), 33.8, 19.05, linewidth=1, edgecolor='black', facecolor='#f0f0f0', alpha=0.3))
 
+    for item in layout_data:
+        lvl = item['level']
+        # 레벨별 색상 설정
+        color = '#1f497d' if lvl == 1 else '#365f91' if lvl == 2 else '#d9d9d9'
+        rect = patches.Rectangle((item['x'], item['y']), item['w'], item['h'], 
+                                 linewidth=1, edgecolor='white', facecolor=color)
+        ax.add_patch(rect)
+        
+        # 텍스트 요약 (너무 길면 자름)
+        display_text = item['node']['text'][:10] + ".." if len(item['node']['text']) > 10 else item['node']['text']
+        txt_color = 'white' if lvl <= 2 else 'black'
+        ax.text(item['x'] + item['w']/2, item['y'] + item['h']/2, display_text, 
+                color=txt_color, fontsize=7, ha='center', va='center')
+
+    ax.set_axis_off()
+    st.pyplot(fig)
+
+# --- 4. PPT 생성 ---
+def generate_ppt(layout_data):
+    prs = Presentation()
+    prs.slide_width = Cm(33.8)
+    prs.slide_height = Cm(19.05)
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+    for item in layout_data:
+        shp = slide.shapes.add_shape(1, Cm(item['x']), Cm(item['y']), Cm(item['w']), Cm(item['h']))
+        lvl = item['level']
+        
+        # 디자인 적용
+        shp.fill.solid()
+        if lvl == 1:
+            shp.fill.fore_color.rgb = RGBColor(31, 73, 125)
+            font_size, font_bold, font_color = Pt(12), True, RGBColor(255, 255, 255)
+        elif lvl == 2:
+            shp.fill.fore_color.rgb = RGBColor(54, 95, 145)
+            font_size, font_bold, font_color = Pt(10), False, RGBColor(255, 255, 255)
+        else:
+            c = min(200 + (lvl * 10), 245)
+            shp.fill.fore_color.rgb = RGBColor(c, c, c+5)
+            shp.line.color.rgb = RGBColor(200, 200, 200)
+            font_size, font_bold, font_color = Pt(8), False, RGBColor(0, 0, 0)
+            
+        tf = shp.text_frame
+        tf.text = item['node']['text']
+        p = tf.paragraphs[0]
+        p.font.size = font_size
+        p.font.bold = font_bold
+        p.font.color.rgb = font_color
+        p.alignment = PP_ALIGN.CENTER if lvl <= 2 else PP_ALIGN.LEFT
+        
     return prs
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="WBS Custom Aligner", layout="wide")
+# --- 5. Streamlit UI ---
+st.set_page_config(page_title="WBS Designer Pro", layout="wide")
 
-# 사이드바 설정창
-st.sidebar.header("🎨 디자인 옵션")
+st.sidebar.title("🎨 WBS 상세 설정")
 
-st.sidebar.subheader("1. 전체 영역 크기 (cm)")
-wbs_w_cm = st.sidebar.number_input("WBS 전체 너비", value=30.0, step=1.0)
-wbs_h_cm = st.sidebar.number_input("WBS 전체 높이", value=15.0, step=1.0)
+# 사이드바: 수치 입력창 (number_input 사용)
+with st.sidebar.expander("📏 전체 크기 설정 (cm)", expanded=True):
+    wbs_w = st.number_input("WBS 전체 가로 너비", 10.0, 32.0, 30.0, 0.5)
+    wbs_h = st.number_input("WBS 전체 세로 높이", 5.0, 18.0, 15.0, 0.5)
 
-st.sidebar.subheader("2. 간격 조절 (cm)")
-l1_gap_cm = st.sidebar.slider("대그룹(L1) 좌우 간격", 0.0, 5.0, 1.5)
-l2_gap_cm = st.sidebar.slider("소그룹(L2) 좌우 간격", 0.0, 3.0, 0.5)
-v_gap_cm = st.sidebar.slider("상하(Vertical) 기본 간격", 0.1, 2.0, 0.5)
+with st.sidebar.expander("↔️ 간격 설정 (cm)", expanded=True):
+    l1_gap = st.number_input("대그룹(L1) 간격", 0.0, 10.0, 1.5, 0.1)
+    l2_gap = st.number_input("소그룹(L2) 간격", 0.0, 10.0, 0.5, 0.1)
+    v_gap = st.number_input("상하(Vertical) 기본 간격", 0.0, 5.0, 0.5, 0.05)
 
-config = {
-    'wbs_w_cm': wbs_w_cm, 'wbs_h_cm': wbs_h_cm,
-    'l1_gap_cm': l1_gap_cm, 'l2_gap_cm': l2_gap_cm, 'v_gap_cm': v_gap_cm
-}
+config = {'wbs_w': wbs_w, 'wbs_h': wbs_h, 'l1_gap': l1_gap, 'l2_gap': l2_gap, 'v_gap': v_gap}
 
-st.title("📊 커스텀 WBS 자동 정렬 프로그램")
-st.write("사이드바에서 간격과 크기를 조절한 후 PPT를 생성하세요.")
+st.title("📊 WBS 프로 디자이너")
+st.write("엑셀/PPT를 업로드하고 왼쪽 설정창에서 수치를 변경하면 실시간으로 미리보기가 업데이트됩니다.")
 
 uploaded_file = st.file_uploader("파일 업로드 (xlsx, pptx)", type=["xlsx", "pptx"])
 
 if uploaded_file:
+    # 데이터 파싱
     raw_data = []
-    # 데이터 읽기 (생략 - 이전과 동일)
     if uploaded_file.name.endswith("xlsx"):
         df = pd.read_excel(uploaded_file)
         for val in df.iloc[:, 0]:
@@ -178,11 +201,20 @@ if uploaded_file:
         raw_data.sort(key=lambda x: [int(i) for i in x['id_code'].split('.')])
         tree = build_tree(raw_data)
         
-        st.info(f"선택한 영역: {wbs_w_cm}cm x {wbs_h_cm}cm")
+        # 레이아웃 계산
+        layout_data = calculate_layout(tree, config)
         
-        if st.button("🚀 설정값으로 PPT 생성"):
-            final_ppt = create_final_wbs(tree, config)
-            ppt_io = io.BytesIO()
-            final_ppt.save(ppt_io)
-            ppt_io.seek(0)
-            st.download_button("🎁 완성된 PPT 다운로드", ppt_io, "Custom_WBS.pptx")
+        # 미리보기 영역
+        st.subheader("🖼️ 슬라이드 미리보기")
+        draw_preview(layout_data)
+        
+        # 하단 다운로드 버튼
+        st.divider()
+        col1, col2 = st.columns([4, 1])
+        with col2:
+            if st.button("🚀 최종 PPT 생성 및 다운로드", use_container_width=True):
+                final_ppt = generate_ppt(layout_data)
+                ppt_io = io.BytesIO()
+                final_ppt.save(ppt_io)
+                ppt_io.seek(0)
+                st.download_button("🎁 PPT 파일 받기", ppt_io, "Smart_WBS_Final.pptx")
