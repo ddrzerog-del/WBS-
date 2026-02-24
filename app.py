@@ -37,7 +37,7 @@ def build_tree(data):
             root_nodes.append(node)
     return root_nodes
 
-# --- 2. 좌표 계산 로직 (그룹/아이템 간격 분리) ---
+# --- 2. 좌표 계산 로직 (레벨별 여백 감쇠 적용) ---
 def calculate_layout(root_nodes, config):
     layout_data = []
     wbs_w = config['wbs_w']
@@ -45,10 +45,9 @@ def calculate_layout(root_nodes, config):
     l1_gap_x = config['l1_gap_x']
     l2_gap_x = config['l2_gap_x']
     
-    item_v_gap = config['item_v_gap']   # 아이템 간 기본 간격
-    group_v_gap = config['group_v_gap'] # 그룹(줄기) 간 추가 여백
+    item_v_gap = config['item_v_gap']
+    group_v_gap_base = config['group_v_gap']
 
-    # 슬라이드 중앙 정렬 원점
     start_x = (33.8 - wbs_w) / 2
     start_y = (19.05 - wbs_h) / 2
 
@@ -65,9 +64,7 @@ def calculate_layout(root_nodes, config):
         if l1['children']:
             l2_count = len(l1['children'])
             l2_width = (l1_width - (l2_gap_x * (l2_count - 1))) / l2_count
-            
-            # 1레벨 아래 2레벨은 첫 시작이므로 그룹 간격 적용
-            current_y_for_l2 = y_l1 + h_l1 + group_v_gap
+            current_y_for_l2 = y_l1 + h_l1 + group_v_gap_base # L1->L2는 기본 그룹여백 적용
 
             for j, l2 in enumerate(l1['children']):
                 x_l2 = x_l1 + (j * (l2_width + l2_gap_x))
@@ -75,19 +72,22 @@ def calculate_layout(root_nodes, config):
                 h_l2 = 1.0
                 layout_data.append({'node': l2, 'x': x_l2, 'y': y_l2, 'w': l2_width, 'h': h_l2, 'level': 2})
 
-                # 재귀적으로 하위 노드 배치
                 def draw_recursive(parent_node, px, py, pw, ph):
                     nonlocal layout_data
                     last_y = py + ph
                     
                     for idx, child in enumerate(parent_node['children']):
-                        # 첫 자식은 부모에게 밀착(item_v_gap)
-                        # 두 번째 형제부터는 '그룹 간 여백(group_v_gap)'을 추가로 적용
-                        gap = item_v_gap if idx == 0 else (item_v_gap + group_v_gap)
+                        # 부모-첫자식은 항상 타이트하게
+                        if idx == 0:
+                            gap = item_v_gap
+                        else:
+                            # 레벨에 따라 그룹 여백을 감쇠 (5레벨로 갈수록 0에 수렴)
+                            # 3레벨 형제는 100%, 4레벨은 40%, 5레벨은 10%만 적용
+                            level_weight = 1.0 if child['level'] <= 3 else (0.4 if child['level'] == 4 else 0.1)
+                            gap = item_v_gap + (group_v_gap_base * level_weight)
                         
                         target_y = last_y + gap
                         
-                        # 너비 축소 및 우측 정렬
                         reduction = 0.3 * (child['level'] - 2)
                         c_w = max(l2_width - reduction, 2.0)
                         c_x = (px + pw) - c_w
@@ -97,7 +97,6 @@ def calculate_layout(root_nodes, config):
                             'node': child, 'x': c_x, 'y': target_y, 'w': c_w, 'h': c_h, 'level': child['level']
                         })
                         
-                        # 자식의 가족들 전체 높이를 계산하여 반환
                         last_y = draw_recursive(child, c_x, target_y, c_w, c_h)
                     
                     return last_y
@@ -112,15 +111,16 @@ def draw_preview(layout_data):
     ax.set_xlim(0, 33.8)
     ax.set_ylim(0, 19.05)
     ax.invert_yaxis()
-    ax.add_patch(patches.Rectangle((0, 0), 33.8, 19.05, linewidth=1, edgecolor='gray', facecolor='#fdfdfd', alpha=0.5))
+    ax.add_patch(patches.Rectangle((0, 0), 33.8, 19.05, linewidth=1, edgecolor='#cccccc', facecolor='#fdfdfd'))
     for item in layout_data:
         lvl = item['level']
-        color = '#1f497d' if lvl == 1 else '#365f91' if lvl == 2 else '#efefef'
-        rect = patches.Rectangle((item['x'], item['y']), item['w'], item['h'], linewidth=0.5, edgecolor='#aaaaaa', facecolor=color)
+        color = '#1f497d' if lvl == 1 else '#365f91' if lvl == 2 else '#f2f2f2'
+        edge = 'white' if lvl <= 2 else '#cccccc'
+        rect = patches.Rectangle((item['x'], item['y']), item['w'], item['h'], linewidth=0.5, edgecolor=edge, facecolor=color)
         ax.add_patch(rect)
-        display_text = item['node']['text'][:12]
+        display_text = item['node']['text'][:15]
         txt_color = 'white' if lvl <= 2 else 'black'
-        ax.text(item['x'] + item['w']/2, item['y'] + item['h']/2, display_text, color=txt_color, fontsize=6, ha='center', va='center')
+        ax.text(item['x'] + item['w']/2, item['y'] + item['h']/2, display_text, color=txt_color, fontsize=5.5, ha='center', va='center')
     ax.set_axis_off()
     st.pyplot(fig)
 
@@ -142,7 +142,7 @@ def generate_ppt(layout_data):
         else:
             c = min(220 + (lvl * 5), 250)
             shp.fill.fore_color.rgb = RGBColor(c, c, c+5)
-            shp.line.color.rgb = RGBColor(200, 200, 200)
+            shp.line.color.rgb = RGBColor(180, 180, 180)
             f_size, f_bold, f_color, align = Pt(9), False, RGBColor(0, 0, 0), PP_ALIGN.LEFT
         tf = shp.text_frame
         tf.text = item['node']['text']
@@ -152,32 +152,25 @@ def generate_ppt(layout_data):
 
 # --- 5. Streamlit UI ---
 st.set_page_config(page_title="WBS Master Designer", layout="wide")
+st.sidebar.title("🎨 레이아웃 정밀 설정")
 
-st.sidebar.title("🎨 WBS 레이아웃 커스텀")
+with st.sidebar.expander("📏 캔버스 크기", expanded=True):
+    wbs_w = st.number_input("가로 너비(cm)", 10.0, 32.0, 31.0)
+    wbs_h = st.number_input("세로 높이(cm)", 5.0, 18.0, 16.0)
 
-with st.sidebar.expander("📏 전체 캔버스 (cm)", expanded=True):
-    wbs_w = st.number_input("WBS 전체 너비", 10.0, 32.0, 30.0, 0.5)
-    wbs_h = st.number_input("WBS 전체 높이", 5.0, 18.0, 15.0, 0.5)
+with st.sidebar.expander("↕️ 수직 여백 (cm)", expanded=True):
+    item_v_gap = st.number_input("아이템 간 간격 (기본)", 0.0, 1.0, 0.05, 0.01)
+    group_v_gap = st.number_input("그룹 간 추가 여백 (3레벨 기준)", 0.0, 5.0, 0.8, 0.1)
+    st.caption("※ 4~5레벨은 자동으로 촘촘하게(아이템 간격 위주) 배치됩니다.")
 
-with st.sidebar.expander("↔️ 좌우 간격 (cm)", expanded=True):
-    l1_gap_x = st.number_input("대그룹(L1) 간격", 0.0, 10.0, 1.5, 0.1)
-    l2_gap_x = st.number_input("소그룹(L2) 간격", 0.0, 5.0, 0.5, 0.1)
+with st.sidebar.expander("↔️ 좌우 간격", expanded=True):
+    l1_gap_x = st.number_input("대그룹(L1) 간격", 0.0, 10.0, 1.0)
+    l2_gap_x = st.number_input("소그룹(L2) 간격", 0.0, 5.0, 0.3)
 
-with st.sidebar.expander("↕️ 상하 간격 정밀 조정 (cm)", expanded=True):
-    item_v_gap = st.number_input("아이템 간 간격 (기본)", 0.0, 2.0, 0.1, 0.05)
-    group_v_gap = st.number_input("그룹(줄기) 간 추가 여백", 0.0, 5.0, 0.8, 0.1)
-    st.caption("그룹 간 여백을 키우면 다른 줄기 사이가 벌어집니다.")
+config = {'wbs_w': wbs_w, 'wbs_h': wbs_h, 'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x, 'item_v_gap': item_v_gap, 'group_v_gap': group_v_gap}
 
-config = {
-    'wbs_w': wbs_w, 'wbs_h': wbs_h, 
-    'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x,
-    'item_v_gap': item_v_gap, 'group_v_gap': group_v_gap
-}
-
-st.title("📊 WBS 마스터 디자이너")
-st.info("아이템 간 간격은 '촘촘하게', 그룹 간 추가 여백은 '넓게' 설정하면 최고의 가독성이 나옵니다.")
-
-uploaded_file = st.file_uploader("엑셀 또는 PPT 파일 업로드", type=["xlsx", "pptx"])
+st.title("📊 WBS 프로 디자이너 (하위 레벨 밀착 모드)")
+uploaded_file = st.file_uploader("엑셀/PPT 업로드", type=["xlsx", "pptx"])
 
 if uploaded_file:
     raw_data = []
@@ -198,13 +191,11 @@ if uploaded_file:
         raw_data.sort(key=lambda x: [int(i) for i in x['id_code'].split('.')])
         tree = build_tree(raw_data)
         layout_data = calculate_layout(tree, config)
-        
-        st.subheader("🖼️ 디자인 미리보기")
+        st.subheader("🖼️ 디자인 미리보기 (5레벨 자동 밀착 적용)")
         draw_preview(layout_data)
-        
-        if st.button("🚀 설정대로 PPT 생성", use_container_width=True):
+        if st.button("🚀 PPT 생성", use_container_width=True):
             final_ppt = generate_ppt(layout_data)
             ppt_io = io.BytesIO()
             final_ppt.save(ppt_io)
             ppt_io.seek(0)
-            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Customized_WBS.pptx")
+            st.download_button("🎁 다운로드", ppt_io, "Smart_WBS_Final.pptx")
