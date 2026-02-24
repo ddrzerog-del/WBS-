@@ -37,7 +37,7 @@ def build_tree(data):
             root_nodes.append(node)
     return root_nodes
 
-# --- 2. 좌표 계산 로직 (그룹 간격 최적화) ---
+# --- 2. 좌표 계산 로직 (계층적 간격 축소 적용) ---
 def calculate_layout(root_nodes, config):
     layout_data = []
     wbs_w = config['wbs_w']
@@ -45,17 +45,12 @@ def calculate_layout(root_nodes, config):
     l1_gap_x = config['l1_gap_x']
     l2_gap_x = config['l2_gap_x']
     
-    # 레벨별 그룹 사이 간격 (황금비율 적용값)
-    group_v_gaps = {
-        2: config['v_gap_1_2'],
-        3: config['v_gap_2_3'],
-        4: config['v_gap_3_4'],
-        'deep': config['v_gap_deep']
-    }
-    
-    # 직계(부모-자식) 사이 아주 좁은 고정 간격
-    tight_gap = 0.05 
+    # 설정값
+    base_v_gap = config['base_v_gap']
+    gap_decay = config['gap_decay'] # 레벨당 간격 축소 비율 (기본 0.618)
+    tight_gap = 0.05 # 부모-첫자식 밀착 간격
 
+    # 슬라이드 중앙 정렬
     start_x = (33.8 - wbs_w) / 2
     start_y = (19.05 - wbs_h) / 2
 
@@ -73,35 +68,32 @@ def calculate_layout(root_nodes, config):
             l2_count = len(l1['children'])
             l2_width = (l1_width - (l2_gap_x * (l2_count - 1))) / l2_count
             
-            # 1레벨 -> 2레벨은 첫 시작이므로 그룹 간격 적용
-            current_y_for_l2 = y_l1 + h_l1 + group_v_gaps[2]
+            # 1레벨 아래 2레벨 시작점 (기본 간격 적용)
+            current_y_for_l2 = y_l1 + h_l1 + base_v_gap
 
             for j, l2 in enumerate(l1['children']):
-                # 형제 L2 사이에는 간격을 크게 주지 않고 (이미 X축으로 나뉘어 있으므로) 
-                # 하지만 세로형 WBS라면 여기서 y를 벌려야 함. 현재는 2레벨까지 가로 전개.
                 x_l2 = x_l1 + (j * (l2_width + l2_gap_x))
                 y_l2 = current_y_for_l2
                 h_l2 = 1.0
                 layout_data.append({'node': l2, 'x': x_l2, 'y': y_l2, 'w': l2_width, 'h': h_l2, 'level': 2})
 
-                # 3레벨 이하 재귀적 배치 함수
-                def draw_descendants(parent_node, px, py, pw, ph, level):
+                # 재귀적 하위 노드 배치 함수
+                def draw_recursive(parent_node, px, py, pw, ph, level):
                     nonlocal layout_data
                     last_y = py + ph
                     
+                    # 현재 레벨에 적용할 형제 간격 (레벨이 깊어질수록 감쇠)
+                    # Level 2의 자식(Level 3들) 사이의 간격 계산
+                    current_sibling_gap = base_v_gap * (gap_decay ** (level - 1))
+
                     for idx, child in enumerate(parent_node['children']):
-                        # 부모와 '첫 번째 자식' 사이는 촘촘하게(tight_gap)
-                        # '두 번째 형제' 부터는 그룹 간격(group_v_gap) 적용
-                        if idx == 0:
-                            current_gap = tight_gap
-                        else:
-                            # 레벨에 맞는 그룹 간격 선택
-                            current_gap = group_v_gaps.get(level + 1, group_v_gaps['deep'])
+                        # 첫 자식은 부모에게 밀착, 두 번째 자식(형제)부터는 감쇠된 간격 적용
+                        gap = tight_gap if idx == 0 else current_sibling_gap
                         
-                        target_y = last_y + current_gap
+                        target_y = last_y + gap
                         
-                        # 너비 축소 및 우측 정렬
-                        reduction = 0.3 * (child['level'] - 2)
+                        # 너비 계단식 축소 및 우측 정렬
+                        reduction = 0.4 * (child['level'] - 2)
                         c_w = max(l2_width - reduction, 2.0)
                         c_x = (px + pw) - c_w
                         c_h = 0.8
@@ -110,17 +102,16 @@ def calculate_layout(root_nodes, config):
                             'node': child, 'x': c_x, 'y': target_y, 'w': c_w, 'h': c_h, 'level': child['level']
                         })
                         
-                        # 자식의 자식들을 그리기 위해 재귀 호출 (여기서 반환된 y값이 이 그룹의 진짜 끝)
-                        last_y = draw_descendants(child, c_x, target_y, c_w, c_h, child['level'])
+                        # 더 깊은 자식으로 들어감
+                        last_y = draw_recursive(child, c_x, target_y, c_w, c_h, child['level'])
                     
                     return last_y
 
-                # 2레벨 아래로 3레벨부터 시작
-                draw_descendants(l2, x_l2, y_l2, l2_width, h_l2, 2)
+                draw_recursive(l2, x_l2, y_l2, l2_width, h_l2, 2)
                     
     return layout_data
 
-# --- 3. 미리보기 & 4. PPT 생성 (이전과 거의 동일, 레이아웃 데이터만 활용) ---
+# --- 3. 미리보기 (Matplotlib) ---
 def draw_preview(layout_data):
     fig, ax = plt.subplots(figsize=(10, 5.6))
     ax.set_xlim(0, 33.8)
@@ -138,6 +129,7 @@ def draw_preview(layout_data):
     ax.set_axis_off()
     st.pyplot(fig)
 
+# --- 4. PPT 생성 ---
 def generate_ppt(layout_data):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Cm(33.8), Cm(19.05)
@@ -164,8 +156,8 @@ def generate_ppt(layout_data):
     return prs
 
 # --- 5. Streamlit UI ---
-st.set_page_config(page_title="WBS Grouping Designer", layout="wide")
-st.sidebar.title("🎨 WBS 그룹 디자인")
+st.set_page_config(page_title="WBS Pro Designer", layout="wide")
+st.sidebar.title("🎨 WBS 상세 디자인")
 
 with st.sidebar.expander("📏 전체 영역 (cm)", expanded=True):
     wbs_w = st.number_input("가로 너비", 10.0, 32.0, 30.0, 0.5)
@@ -175,28 +167,17 @@ with st.sidebar.expander("↔️ 좌우 간격 (cm)", expanded=True):
     l1_gap_x = st.number_input("대그룹(L1) 간격", 0.0, 10.0, 1.5, 0.1)
     l2_gap_x = st.number_input("소그룹(L2) 간격", 0.0, 5.0, 0.5, 0.1)
 
-with st.sidebar.expander("↕️ 그룹 간 간격 (황금비율)", expanded=True):
-    st.info("부모-첫 자식은 밀착되고, 형제 그룹 사이만 벌어집니다.")
-    auto_golden = st.checkbox("황금비율 모드 사용", value=True)
-    base_v_gap = st.number_input("기준 그룹 간격", 0.1, 5.0, 0.8, 0.1)
-
-    if auto_golden:
-        v_gap_1_2 = base_v_gap
-        v_gap_2_3 = round(v_gap_1_2 * 0.618, 2)
-        v_gap_3_4 = round(v_gap_2_3 * 0.618, 2)
-        v_gap_deep = round(v_gap_3_4 * 0.618, 2)
-    else:
-        v_gap_1_2 = st.number_input("1→2 간격", 0.0, 5.0, 0.6)
-        v_gap_2_3 = st.number_input("2→3 그룹 간격", 0.0, 5.0, 0.4)
-        v_gap_3_4 = st.number_input("3→4 그룹 간격", 0.0, 5.0, 0.2)
-        v_gap_deep = st.number_input("깊은 레벨 그룹 간격", 0.0, 5.0, 0.1)
+with st.sidebar.expander("↕️ 수직 간격(그룹핑) 설정", expanded=True):
+    base_v_gap = st.number_input("기준 형제 간격 (L2 기준)", 0.1, 5.0, 0.8, 0.1)
+    gap_decay = st.slider("레벨당 간격 축소 비율 (황금비율=0.618)", 0.3, 1.0, 0.618, 0.001)
+    st.caption("비율이 낮을수록 하위 자식들이 더 촘촘하게 묶입니다.")
 
 config = {
     'wbs_w': wbs_w, 'wbs_h': wbs_h, 'l1_gap_x': l1_gap_x, 'l2_gap_x': l2_gap_x,
-    'v_gap_1_2': v_gap_1_2, 'v_gap_2_3': v_gap_2_3, 'v_gap_3_4': v_gap_3_4, 'v_gap_deep': v_gap_deep
+    'base_v_gap': base_v_gap, 'gap_decay': gap_decay
 }
 
-st.title("📊 WBS 그룹 정렬 디자이너")
+st.title("📊 WBS 프로 디자이너 (계층형 그룹핑)")
 uploaded_file = st.file_uploader("엑셀 또는 PPT 파일 업로드", type=["xlsx", "pptx"])
 
 if uploaded_file:
@@ -225,4 +206,4 @@ if uploaded_file:
             ppt_io = io.BytesIO()
             final_ppt.save(ppt_io)
             ppt_io.seek(0)
-            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "WBS_Grouped.pptx")
+            st.download_button("🎁 PPT 파일 다운로드", ppt_io, "Smart_WBS_Final.pptx")
